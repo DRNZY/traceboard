@@ -1,99 +1,108 @@
 # Traceboard
 
-Local observability tool for coding agents, including OpenCode, Claude Code, Codex, Antigravity, and Gemini CLI. It records runs locally, shows an event timeline, and helps you find where a task failed.
+Local-first observability for coding-agent runs. Traceboard records what
+OpenCode, Claude Code, Codex, Antigravity, and Gemini CLI did, normalizes it into
+one versioned event model, and shows a searchable run index with a detailed
+timeline.
 
-```text
-┌───────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
-│ TRACEBOARD // RUN INDEX                       │ RUN INSPECTOR: opencode-run-84f9 (Failed)                        │
-├───────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
-│ ▶ opencode-run-84f9   ● Failed     12m ago    │ Duration: 4m 12s | Model: gemini-pro | Ingest: 82.4k tokens      │
-│   Refactor auth middleware & session token    │ Summary: 4 files modified, 12 tool calls, failed at step #9      │
-│                                               ├──────────────────────────────────────────────────────────────────┤
-│ ▶ claude-run-1982     ✓ Complete   1h ago     │ [00:01] run.started            session initialized (opencode)    │
-│   Fix database migration race condition       │ [00:04] model.requested        prompt: "fix token expiry check"  │
-│                                               │ [00:12] tool.started           read_file: internal/auth/token.go │
-│ ▶ codex-run-0041      ✓ Complete   3h ago     │ [00:45] file.changed           internal/auth/token.go (+12, -4)  │
-│   Add Vitest suite for WebSocket client       │ [01:10] command.failed         go test ./internal/auth (exit 1)  │
-│                                               ├──────────────────────────────────────────────────────────────────┤
-│                                               │ [ REPLAY SCRUBBER ] ────────●──────────────────── (Step 9 of 14) │
-└───────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+Everything stays on your machine. There is no account, no hosted service, and
+no outbound request.
+
+## What it answers
+
+After a run finishes, open it and read what happened: the ordered prompts, model
+calls, tool calls, file changes, child agents, and the first source-reported
+failure. Replay reconstructs the recorded state at any point. Replay is a read
+of captured data; it can never re-execute a prompt, a tool, or a command.
+
+## Install
+
+Download one Linux binary and run it:
+
+```sh
+traceboard start
 ```
 
-## How it works
+`start` prints a loopback URL that contains a one-time sign-in token. Opening it
+exchanges the token for a session cookie and lands you on a clean dashboard URL.
+The process listens on `127.0.0.1:47821` and refuses any non-loopback bind
+address.
 
-When an agent fails, hangs, or edits files unexpectedly, tracing what happened usually means digging through terminal output and JSON session logs. 
+## Connect an agent
 
-Traceboard listens on `127.0.0.1:47821` for agent hook events and OTLP traces. It normalizes incoming events into a single schema (`traceboard-event-v1`), strips detected API keys and secrets before saving anything, and writes everything to a local SQLite database with WAL mode and FTS5 search enabled.
-
-A web UI built with Svelte 5 is embedded directly into the Go binary. You can search runs, read through the chronological event log, inspect tool payloads, and use the replay scrubber to see the state at any point in the run without re-executing tools.
-
-```text
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  OpenCode Hook  │     │   Claude Code   │     │   Antigravity   │
-│   (TypeScript)  │     │      (OTLP)     │     │    IDE & SDK    │
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 ▼
-                     ┌───────────────────────┐
-                     │   Local HTTP / OTLP   │
-                     │  (127.0.0.1:47821)    │
-                     └───────────┬───────────┘
-                                 ▼
-                     ┌───────────────────────┐
-                     │ Pre-persist redaction │
-                     └───────────┬───────────┘
-                                 ▼
-                     ┌───────────────────────┐
-                     │  SQLite (WAL + FTS5)  │
-                     └───────────┬───────────┘
-                                 ▼
-                     ┌───────────────────────┐
-                     │ Embedded Svelte 5 UI  │
-                     │  (Live WebSockets)    │
-                     └───────────────────────┘
+```sh
+traceboard configure opencode --mode metadata
 ```
 
-## Setup and usage
+`configure` writes the integration for the named source, backs up any file it
+edits, and prints the manual steps that source requires (a restart, a hook-trust
+review, an OTLP endpoint). It never bypasses an agent's own trust prompt.
 
-### Build from source
+Supported sources and the events each one contributes are listed in
+[docs/compatibility.md](docs/compatibility.md).
 
-```bash
-make build
+## Read the data
+
+```sh
+traceboard status                 # endpoint, store, retention
+traceboard sources                # capture mode and heartbeat per source
+traceboard doctor                 # configuration, permissions, migrations, auth
+traceboard export <run-id>        # json, markdown, or a redacted raw bundle
+traceboard delete <run-id> "<exact run title>"
+traceboard retention preview      # what automatic retention would remove
+traceboard auth rotate            # invalidate sessions, print a new sign-in URL
 ```
 
-This compiles the frontend assets, embeds them, and outputs `bin/traceboard`.
+## Capture modes
 
-### Run the server
+| Mode | What is stored |
+| --- | --- |
+| `off` | Connection health only. No run events, no content. |
+| `metadata` | Lifecycle, timing, model and tool names, file paths, status, and token usage. No prompt or tool bodies. Default. |
+| `detailed` | Everything above plus bounded prompt, tool input, tool output, and error content. |
 
-```bash
-./bin/traceboard start
+`metadata` is the default. A source can ask for more coverage, but never less:
+the configured mode is applied on the way in, so a misbehaving adapter cannot
+upgrade its own capture level. The dashboard states which mode produced a run
+and names anything that was withheld.
+
+## Privacy
+
+- Binds to loopback only. Rejects a non-loopback address at startup.
+- Redaction runs before any database, search index, spool, quarantine, log, or
+  export write.
+- Captured content is rendered as inert text under a strict Content Security
+  Policy. No external script, font, or image is ever loaded.
+- See [docs/privacy.md](docs/privacy.md) for the full boundary.
+
+## Build from source
+
+```sh
+make build      # web assets, then the Go binary
+make test       # Go tests plus the frontend suite
+make check      # go vet plus svelte-check
+make verify     # everything above, plus race, browser, and integration suites
 ```
 
-This starts the collector and prints a one-time sign-in link for the local dashboard.
+## Documentation
 
-### Check installation health
+- [docs/architecture.md](docs/architecture.md) — how a captured event becomes a
+  timeline row
+- [docs/privacy.md](docs/privacy.md) — the security and redaction boundary
+- [docs/compatibility.md](docs/compatibility.md) — per-source versions and known
+  capture gaps
+- [docs/setup.md](docs/setup.md) — first run, capture modes, systemd
+- [docs/recovery.md](docs/recovery.md) — offline spools, restarts, repairs
 
-```bash
-./bin/traceboard doctor
-```
+## Licence and attribution
 
-## CLI reference
+Traceboard is an independent implementation. Design work referenced these
+MIT-licensed local-first projects for their approach to OTLP decoding, embedded
+dashboard packaging, and historical session parsing:
 
-```text
-traceboard start                     Run the collector and embedded dashboard
-traceboard status                    Show the configured endpoint and store state
-traceboard sources                   List configured sources and capture modes
-traceboard configure <source>        Apply source integration steps
-traceboard doctor                    Check the local installation end to end
-traceboard auth rotate               Invalidate sessions and print a new sign-in URL
-traceboard export <run-id>           Write a run to a local file
-traceboard delete <run-id>           Delete a run and its indexed data
-traceboard retention set <duration>  Set automatic run retention
-traceboard daemon install            Install a systemd user service
-```
+- [`tobilg/ai-observer`](https://github.com/tobilg/ai-observer)
+- [`abekdwight/opencode-observability`](https://github.com/abekdwight/opencode-observability)
+- [`cleverb/agent-profiler`](https://github.com/cleverb/agent-profiler)
 
-## License
-
-MIT License. Copyright (c) 2026 Darnell Dijksteel.
-
+No code was copied from them. Any code reused in the future must retain its
+MIT notice and attribution.

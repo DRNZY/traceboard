@@ -32,6 +32,8 @@ func runStart(env *environment, arguments []string) int {
 	set := newFlagSet("start", env)
 	noBrowser := set.Bool("no-browser", false, "print the sign-in URL instead of opening a browser")
 	foreground := set.Bool("foreground", true, "run in the foreground")
+	enableNotify := set.Bool("notify", false, "send desktop notifications on run alerts")
+	noNotify := set.Bool("no-notify", false, "disable desktop notifications")
 	if err := set.Parse(arguments); err != nil {
 		return 2
 	}
@@ -95,7 +97,8 @@ func runStart(env *environment, arguments []string) int {
 		fmt.Fprintf(env.stdout, "spool: replayed %d buffered events\n", drained.Drained)
 	}
 
-	notifier := notify.NewNotifier(notify.Config{Enabled: true})
+	notificationsEnabled := *enableNotify && !*noNotify
+	notifier := notify.NewNotifier(notify.Config{Enabled: notificationsEnabled})
 	evaluator := alerts.NewEvaluator(database, alerts.DefaultConfig(), notifier)
 
 	// A committed ingest can change run health immediately, so evaluation is

@@ -19,6 +19,9 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   use: {
     baseURL: process.env.TRACEBOARD_E2E_URL ?? 'http://127.0.0.1:47821',
+    // `globalSetup` signs in once with the one-time token and shares the
+    // resulting session cookie with every spec.
+    storageState: './e2e/.auth/state.json',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

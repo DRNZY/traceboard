@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -141,6 +141,52 @@ export default async function globalSetup(): Promise<void> {
   await waitForHealth(baseURL)
 
   await seed(baseURL, config.ingest_token)
+
+  // The printed token is one-time, so the suite signs in exactly once and shares
+  // the resulting session cookie with every test.
+  process.env.TRACEBOARD_E2E_TOKEN = await readSignInToken(configPath)
+  await writeStorageState(baseURL, process.env.TRACEBOARD_E2E_TOKEN, authStatePath())
+}
+
+const stateFile = join(process.cwd(), 'e2e', '.auth', 'state.json')
+
+function authStatePath(): string {
+  return stateFile
+}
+
+/** Exchanges the one-time token and stores the session cookie for every spec. */
+async function writeStorageState(baseURL: string, token: string, path: string): Promise<void> {
+  const response = await fetch(`${baseURL}/auth/session`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token }).toString(),
+  })
+  const cookies = response.headers.getSetCookie()
+  const session = cookies.map((value) => value.split(';')[0]).find((value) => value.startsWith('traceboard_session='))
+  if (!session) {
+    throw new Error(`the sign-in exchange returned no session cookie (status ${response.status})`)
+  }
+  const [name, value] = session.split('=')
+  const { port } = new URL(baseURL)
+  const payload = {
+    cookies: [
+      {
+        name,
+        value,
+        domain: '127.0.0.1',
+        path: '/',
+        expires: -1,
+        httpOnly: true,
+        secure: false,
+        sameSite: 'Strict',
+      },
+    ],
+    origins: [],
+  }
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, JSON.stringify(payload, null, 2), { mode: 0o600 })
+  void port
 }
 
 export async function globalTeardown(): Promise<void> {

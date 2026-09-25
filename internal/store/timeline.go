@@ -91,11 +91,16 @@ func (store *Store) ListEvents(ctx context.Context, runID string, afterSequence 
 		page.HasMore = true
 	}
 	// The resume cursor is the highest ingest sequence carried by this page, so a
-	// client can page without ever replaying or skipping an event.
+	// client can page without ever replaying or skipping an event. Once the page
+	// reaches the end of the run the cursor advances to the run's own head, so
+	// a client that holds everything is not told it is missing events.
 	for _, record := range page.Events {
 		if record.Sequence > page.NextSequence {
 			page.NextSequence = record.Sequence
 		}
+	}
+	if !page.HasMore {
+		page.NextSequence = runSequence
 	}
 	return page, nil
 }

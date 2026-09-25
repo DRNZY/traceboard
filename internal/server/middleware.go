@@ -18,7 +18,7 @@ const (
 	maxHookBodyBytes      = 1 << 20
 	maxQueryBodyBytes     = 64 << 10
 	allowedHostSuffixDNS  = "localhost"
-	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 )
 
 type middleware struct {
@@ -73,12 +73,22 @@ func (m middleware) validateHost(next http.Handler) http.Handler {
 	})
 }
 
-// requireSameOrigin blocks cross-site mutations from a browser. Loopback
-// sources send no Origin header at all, which is allowed.
+// requireSameOrigin blocks cross-site mutations from a browser.
+//
+// Two signals are used together. `Origin` is the primary one, but a form
+// submission from a document the browser treats as having an opaque origin
+// sends the literal value "null", which is not comparable. `Sec-Fetch-Site` is
+// the browser-supplied fallback: page script cannot set it, so it is
+// trustworthy when present. A client that sends neither is not a browser and
+// holds no ambient cookie, so there is nothing for it to ride on.
 func (m middleware) requireSameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		origin := request.Header.Get("Origin")
-		if origin == "" {
+		if origin == "" || origin == "null" {
+			if request.Header.Get("Sec-Fetch-Site") == "cross-site" {
+				writeError(writer, http.StatusForbidden, "cross_origin", "cross-origin request rejected")
+				return
+			}
 			next.ServeHTTP(writer, request)
 			return
 		}

@@ -109,6 +109,7 @@ func (s *Server) routes() {
 	s.router.HandleFunc("GET /health", s.handleHealth)
 
 	s.router.Handle("GET /auth/signin", s.mux.requireSameOrigin(http.HandlerFunc(s.handleSignInPage)))
+	s.router.Handle("GET /auth/signin.css", http.HandlerFunc(handleSignInStylesheet))
 	// The exchange itself is unauthenticated: the one-time token in the body is
 	// the credential, and requiring a session first would make sign-in
 	// impossible.

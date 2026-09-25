@@ -97,7 +97,9 @@
   <header class="index__header">
     <div>
       <p class="label" id="run-index-heading">Run index</p>
-      <p class="index__count">{formatCount(runs.length)} runs shown</p>
+      <p class="index__count">
+        {formatCount(runs.length)} run{runs.length === 1 ? '' : 's'} shown
+      </p>
     </div>
     <button class="button" type="button" onclick={() => onFilterChange({})}>Reset filters</button>
   </header>

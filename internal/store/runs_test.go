@@ -171,11 +171,52 @@ func TestListEventsOrdersTimelineDeterministically(t *testing.T) {
 	if page.RunSequence != 5 {
 		t.Fatalf("run sequence = %d, want 5", page.RunSequence)
 	}
-	if page.NextSequence != 4 {
-		t.Fatalf("resume cursor = %d, want the highest delivered sequence 4", page.NextSequence)
+	// The page reached the end of the run, so the cursor is the run's own head:
+	// a client holding every event is not told it is missing any.
+	if page.NextSequence != page.RunSequence {
+		t.Fatalf("resume cursor = %d, want the run head %d", page.NextSequence, page.RunSequence)
 	}
 	if page.RunStatus != event.StatusStarted {
 		t.Fatalf("run status = %s, want started", page.RunStatus)
+	}
+}
+
+func TestListEventsReportsTheRangeAsIncompleteWhenAPageStopsShort(t *testing.T) {
+	store := openMigratedStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	seed := func(id, runID string, at time.Time) {
+		if _, err := store.InsertEvents(ctx, event.Event{
+			SchemaVersion: event.SchemaVersion1,
+			EventID:       id, SourceEventID: id, Source: "opencode", RunID: runID,
+			OccurredAt: at, Type: event.TypeToolStarted, Status: event.StatusStarted,
+			Capture: map[string]any{"mode": "metadata"}, Attributes: map[string]any{},
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("evt_1", "run_page", time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC))
+	seed("evt_2", "run_page", time.Date(2026, 9, 25, 10, 0, 1, 0, time.UTC))
+	seed("evt_3", "run_page", time.Date(2026, 9, 25, 10, 0, 2, 0, time.UTC))
+
+	page, err := store.ListEvents(ctx, "run_page", 0, 2)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !page.HasMore {
+		t.Fatal("a truncated page must report that more remain")
+	}
+	if page.NextSequence != 2 {
+		t.Fatalf("resume cursor = %d, want the highest delivered sequence 2", page.NextSequence)
+	}
+	if page.RunSequence != 4 {
+		t.Fatalf("run head = %d, want 4", page.RunSequence)
+	}
+	// The cursor sits behind the head, which is exactly the signal a client uses
+	// to refuse to claim the range is complete.
+	if page.NextSequence >= page.RunSequence {
+		t.Fatal("a truncated page must leave the cursor behind the run head")
 	}
 }
 
