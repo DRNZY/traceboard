@@ -2,6 +2,7 @@ package server
 
 import (
 	"io"
+	"net/http"
 	"strings"
 )
 
@@ -52,4 +53,14 @@ func htmlEscape(value string) string {
 		"'", "&#39;",
 	)
 	return replacer.Replace(value)
+}
+
+// renderSignInFailure re-renders the sign-in page with a fixed message. It never
+// echoes the submitted token, so a failed exchange leaves no credential on the
+// page or in the browser history.
+func renderSignInFailure(writer http.ResponseWriter, _ *http.Request) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusUnauthorized)
+	_, _ = io.WriteString(writer, signInPageHTML("", "That sign-in link is no longer valid. Run traceboard start to print a new one."))
 }

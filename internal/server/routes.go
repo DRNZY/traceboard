@@ -169,15 +169,34 @@ func (s *Server) handleSignInPage(writer http.ResponseWriter, request *http.Requ
 
 func (s *Server) handleExchange(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, maxQueryBodyBytes)
-	var payload struct {
-		Token string `json:"token"`
+
+	// A browser posts the sign-in form; the dashboard client posts JSON. Both
+	// carry the same one-time token, and only the response shape differs.
+	fromForm := strings.HasPrefix(request.Header.Get("Content-Type"), "application/x-www-form-urlencoded")
+	var token string
+	if fromForm {
+		if err := request.ParseForm(); err != nil {
+			writeError(writer, http.StatusBadRequest, "invalid_request", "a sign-in token is required")
+			return
+		}
+		token = request.PostFormValue("token")
+	} else {
+		var payload struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			writeError(writer, http.StatusBadRequest, "invalid_request", "a sign-in token is required")
+			return
+		}
+		token = payload.Token
 	}
-	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-		writeError(writer, http.StatusBadRequest, "invalid_request", "a sign-in token is required")
-		return
-	}
-	sessionToken, err := s.deps.Auth.ExchangeDashboardToken(request.Context(), payload.Token)
+
+	sessionToken, err := s.deps.Auth.ExchangeDashboardToken(request.Context(), token)
 	if err != nil {
+		if fromForm {
+			renderSignInFailure(writer, request)
+			return
+		}
 		writeError(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
 		return
 	}
@@ -190,6 +209,12 @@ func (s *Server) handleExchange(writer http.ResponseWriter, request *http.Reques
 		Secure:   false,
 		MaxAge:   int(auth.SessionTTL.Seconds()),
 	})
+	if fromForm {
+		// The one-time token is now in the session cookie, so the clean URL is
+		// safe to show and nothing credential-bearing stays in the address bar.
+		http.Redirect(writer, request, "/", http.StatusSeeOther)
+		return
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{"authenticated": true})
 }
 

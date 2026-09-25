@@ -29,7 +29,7 @@ waiting for navigation until "load"
   - heading "Traceboard sign in" [level=1] [ref=e3]
   - generic [ref=e4]:
     - text: One-time token
-    - textbox "One-time token" [ref=e5]: PNP-bkFQ4MvnGt3oSfVG8ADwduzOSAPRQr3IGvLD6kc
+    - textbox "One-time token" [ref=e5]: FKuGpagvrV-Q2XBEbTQrbNZn_EA_Iu2inWzdxkKd_EI
     - button "Open dashboard" [active] [ref=e6]
 ```
 
