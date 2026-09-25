@@ -1,0 +1,1 @@
+{"version":9,"type":"context-options","origin":"library","browserName":"","playwrightVersion":"1.63.0","options":{},"platform":"linux","wallTime":1790362017767,"monotonicTime":125668.592,"sdkLanguage":"javascript","title":"run-inspector.spec.ts:64 › run index and inspector › replay reconstructs recorded state and offers no re-execution control"}
