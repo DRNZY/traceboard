@@ -240,3 +240,69 @@ func TestAcknowledgedAlertIsNotNotifiedAgain(t *testing.T) {
 		t.Fatalf("an acknowledged alert produced %d notifications", len(notifier.calls))
 	}
 }
+
+func TestSilentRunIsRecordedAsIncompleteNotFailed(t *testing.T) {
+	evaluator, database, _ := newTestEvaluator(t, DefaultConfig())
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	seedRun(t, database, "run_silent", event.TypeRunStarted, event.StatusStarted, now.Add(-30*time.Minute))
+
+	var marked []string
+	evaluator.SetIncompleteHandler(func(runID string) { marked = append(marked, runID) })
+
+	if err := evaluator.Evaluate(context.Background(), now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+
+	run, err := database.GetRun(context.Background(), "run_silent")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != event.StatusIncomplete {
+		t.Fatalf("status = %s, want incomplete", run.Status)
+	}
+	if run.ErrorCount != 0 {
+		t.Fatalf("a silent run must not be counted as an error: %d", run.ErrorCount)
+	}
+	if run.EndedAt == nil || !run.EndedAt.Equal(now) {
+		t.Fatalf("ended at = %v, want %v", run.EndedAt, now)
+	}
+	if len(marked) != 1 || marked[0] != "run_silent" {
+		t.Fatalf("incomplete handler calls = %v", marked)
+	}
+}
+
+func TestASilentRunIsNotMarkedIncompleteTwice(t *testing.T) {
+	evaluator, database, _ := newTestEvaluator(t, DefaultConfig())
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	seedRun(t, database, "run_once", event.TypeRunStarted, event.StatusStarted, now.Add(-30*time.Minute))
+
+	marked := 0
+	evaluator.SetIncompleteHandler(func(string) { marked++ })
+	for round := 0; round < 3; round++ {
+		if err := evaluator.Evaluate(context.Background(), now); err != nil {
+			t.Fatalf("evaluate %d: %v", round, err)
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("the incomplete transition fired %d times, want once", marked)
+	}
+}
+
+func TestARecoveredRunIsNeverMarkedIncomplete(t *testing.T) {
+	evaluator, database, _ := newTestEvaluator(t, DefaultConfig())
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	seedRun(t, database, "run_live", event.TypeRunStarted, event.StatusStarted, now.Add(-time.Minute))
+
+	marked := 0
+	evaluator.SetIncompleteHandler(func(string) { marked++ })
+	if err := evaluator.Evaluate(context.Background(), now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	run, err := database.GetRun(context.Background(), "run_live")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != event.StatusStarted || marked != 0 {
+		t.Fatalf("an active run must stay active, got %s with %d transitions", run.Status, marked)
+	}
+}

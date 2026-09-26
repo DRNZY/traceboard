@@ -91,6 +91,34 @@
       </div>
     </dl>
 
+    <section class="settings__spool" aria-labelledby="spool-heading">
+      <h3 id="spool-heading" class="label">Offline spool</h3>
+      {#if !settings.spool || settings.spool.length === 0}
+        <p class="settings__note">
+          Nothing is buffered. Every source is writing straight to the store.
+        </p>
+      {:else}
+        <ul class="settings__spool-list">
+          {#each settings.spool as entry (entry.source)}
+            <li class="settings__spool-row">
+              <span class="mono">{entry.source}</span>
+              <span class="mono">
+                {formatCount(entry.events)} events · {formatBytes(entry.bytes)} of
+                {formatBytes(entry.limit_bytes)}
+              </span>
+              {#if entry.at_risk}
+                <span class="settings__risk">
+                  at the size limit; {formatCount(entry.dropped)} dropped
+                </span>
+              {:else}
+                <span class="settings__note-inline">drains on the next collector start</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
     <section class="settings__limits" aria-labelledby="limits-heading">
       <h3 id="limits-heading" class="label">Compiled limits</h3>
       <ul class="settings__limit-list">
@@ -162,6 +190,42 @@
   .settings__commit {
     margin-left: var(--step-2);
     color: var(--bone-dim);
+  }
+
+  .settings__spool {
+    display: grid;
+    gap: var(--step-2);
+    padding-top: var(--step-4);
+    border-top: 1px solid var(--rule);
+  }
+
+  .settings__spool-list {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .settings__spool-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+    gap: var(--step-3);
+    padding: var(--step-2) 0;
+    border-bottom: 1px solid var(--rule);
+    align-items: baseline;
+  }
+
+  .settings__risk {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  .settings__note-inline {
+    color: var(--bone-dim);
+    font-family: var(--mono);
+    font-size: 11px;
   }
 
   .settings__limits {

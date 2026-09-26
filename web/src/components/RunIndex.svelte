@@ -267,6 +267,8 @@
             </span>
 
             <span class="run-row__facts">
+              <span class="run-row__id">{run.id}</span>
+              <span aria-hidden="true">·</span>
               <span>{formatTimestamp(run.started_at ?? run.last_event_at)}</span>
               {#if run.open_alerts > 0}
                 <span aria-hidden="true">·</span>
@@ -410,6 +412,11 @@
 
   .run-row__alerts {
     color: var(--accent);
+  }
+
+  .run-row__id {
+    color: var(--bone);
+    word-break: break-all;
   }
 
   .index__more {

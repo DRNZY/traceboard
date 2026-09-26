@@ -46,6 +46,9 @@ type Evaluator struct {
 	config   Config
 	notifier Notifier
 	now      func() time.Time
+	// onRunIncomplete lets the caller publish the summary change a silent run
+	// just received, so an open dashboard learns about it without polling.
+	onRunIncomplete func(runID string)
 }
 
 func NewEvaluator(database *store.Store, config Config, notifier Notifier) *Evaluator {
@@ -59,6 +62,18 @@ func NewEvaluator(database *store.Store, config Config, notifier Notifier) *Eval
 		config.MissedHeartbeats = 3
 	}
 	return &Evaluator{store: database, config: config, notifier: notifier, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// SetIncompleteHandler registers the callback invoked when a silent run is
+// recorded as incomplete.
+func (evaluator *Evaluator) SetIncompleteHandler(handler func(runID string)) {
+	evaluator.onRunIncomplete = handler
+}
+
+func (evaluator *Evaluator) markedIncomplete(runID string) {
+	if evaluator.onRunIncomplete != nil {
+		evaluator.onRunIncomplete(runID)
+	}
 }
 
 func (evaluator *Evaluator) SetClock(now func() time.Time) {
@@ -140,6 +155,13 @@ func (evaluator *Evaluator) evaluateStalled(ctx context.Context, now time.Time) 
 		if run.LastEventAt.UnixNano() > cutoff {
 			continue
 		}
+		// Silence past the timeout means the source never reported a terminal
+		// state. The run is recorded as incomplete, which is a statement about
+		// what was observed; it is never recorded as a failure.
+		marked, err := evaluator.store.MarkRunIncomplete(ctx, run.ID, now)
+		if err != nil {
+			return err
+		}
 		alert := store.Alert{
 			Type:    TypeRunStalled,
 			RunID:   stringPointer(run.ID),
@@ -150,6 +172,14 @@ func (evaluator *Evaluator) evaluateStalled(ctx context.Context, now time.Time) 
 			return err
 		}
 		evaluator.notify(ctx, opened, created)
+		if marked {
+			// A fresh terminal event would have arrived by now, so the run's own
+			// silence alert no longer describes the state.
+			if _, err := evaluator.store.ResolveAlerts(ctx, TypeRunIncomplete, stringPointer(run.ID), nil, now); err != nil {
+				return err
+			}
+			evaluator.markedIncomplete(run.ID)
+		}
 	}
 	return nil
 }

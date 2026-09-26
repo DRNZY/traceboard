@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +28,15 @@ import (
 	"traceboard/internal/store"
 )
 
+// SpoolReporter exposes the offline buffer to the settings page so an operator
+// can see whether a source is waiting to be drained.
+type SpoolReporter interface {
+	States(ctx context.Context) ([]ingest.SpoolState, error)
+}
+
+// Compile-time proof that the concrete spool satisfies the reporter contract.
+var _ SpoolReporter = (*ingest.Spool)(nil)
+
 // Ingestor is the single write path into the store. Both the JSON endpoint and
 // the OTLP endpoints funnel through it so validation, redaction, and
 // publication behave identically.
@@ -47,6 +57,9 @@ type Dependencies struct {
 	// ExportDir is where dashboard-triggered exports are written. It must be a
 	// user-only directory owned by this process.
 	ExportDir string
+	// Spool is the offline buffer, surfaced so an operator can see whether a
+	// source is losing data while the collector is down.
+	Spool SpoolReporter
 	// ConfigPath is the credential file location reported by the settings page.
 	ConfigPath string
 	Commit     string
@@ -607,6 +620,21 @@ func (s *Server) handleSettings(writer http.ResponseWriter, request *http.Reques
 	if configPath == "" {
 		configPath = filepath.Dir(s.deps.Config.DatabasePath)
 	}
+
+	// A missing or failing spool must not take the settings page down with it:
+	// the rest of the configuration is still worth reporting, and an absent list
+	// renders as "nothing buffered" rather than an error.
+	spoolStates := []ingest.SpoolState{}
+	if s.deps.Spool != nil {
+		if states, spoolErr := s.deps.Spool.States(ctx); spoolErr == nil {
+			if states != nil {
+				spoolStates = states
+			}
+		} else {
+			slog.WarnContext(ctx, "spool state unavailable", "error", spoolErr)
+		}
+	}
+
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"version":                    s.deps.Version,
 		"commit":                     buildinfo.Commit,
@@ -622,6 +650,7 @@ func (s *Server) handleSettings(writer http.ResponseWriter, request *http.Reques
 		"started_at":                 s.deps.Started,
 		"export_dir":                 s.exportDir,
 		"heartbeat_seconds":          s.deps.Config.HeartbeatSeconds,
+		"spool":                      spoolStates,
 	})
 }
 

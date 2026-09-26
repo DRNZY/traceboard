@@ -522,6 +522,25 @@ func (store *Store) SelectRetentionCandidates(ctx context.Context, policy Retent
 	return candidates, nil
 }
 
+// MarkRunIncomplete records that a run ended without the source reporting a
+// terminal event. The run keeps every event it did receive; only its summary
+// changes, and the change is a fact about silence rather than a guess about why.
+func (store *Store) MarkRunIncomplete(ctx context.Context, runID string, at time.Time) (bool, error) {
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE runs
+		SET status = ?, ended_at = COALESCE(ended_at, ?), updated_at = ?
+		WHERE id = ? AND status = ?`,
+		string(event.StatusIncomplete), at.UTC().UnixNano(), at.UTC().UnixNano(), runID, string(event.StatusStarted))
+	if err != nil {
+		return false, fmt.Errorf("mark run incomplete: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mark run incomplete count: %w", err)
+	}
+	return affected == 1, nil
+}
+
 func (store *Store) CountRuns(ctx context.Context) (int, error) {
 	var count int
 	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs").Scan(&count); err != nil {

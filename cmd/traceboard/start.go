@@ -132,13 +132,15 @@ func runStart(env *environment, arguments []string) int {
 	})
 
 	handler := server.New(server.Dependencies{
-		Config:  cfg,
-		Store:   database,
-		Auth:    manager,
-		Hub:     hub,
-		Ingest:  ingest.NewCombinedService(service, otlpService),
-		Version: buildinfo.Version,
-		Started: time.Now().UTC(),
+		Config:     cfg,
+		Store:      database,
+		Auth:       manager,
+		Hub:        hub,
+		Ingest:     ingest.NewCombinedService(service, otlpService),
+		Spool:      spool,
+		ConfigPath: env.resolveConfigPath(),
+		Version:    buildinfo.Version,
+		Started:    time.Now().UTC(),
 	})
 
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
@@ -166,6 +168,15 @@ func runStart(env *environment, arguments []string) int {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+
+	// A run recorded as incomplete is a committed change like any other, so the
+	// open dashboard learns about it without polling.
+	evaluator.SetIncompleteHandler(func(runID string) {
+		run, err := database.GetRun(ctx, runID)
+		if err == nil {
+			hub.PublishRunChanged(run)
+		}
+	})
 
 	go evaluator.Run(ctx, 30*time.Second)
 	go expirySweeper.Run(ctx)

@@ -131,6 +131,7 @@ export default async function globalSetup(): Promise<void> {
 
   const config = JSON.parse(await readFile(configPath, 'utf8')) as Config
   process.env.TRACEBOARD_E2E_TOKEN = await readSignInToken(configPath)
+  process.env.TRACEBOARD_E2E_INGEST_TOKEN = config.ingest_token
 
   const updated = { ...config, sources: { opencode: { capture_mode: 'detailed' } } } as Config
   await writeFile(configPath, JSON.stringify(updated, null, 2), { mode: 0o600 })
@@ -145,6 +146,7 @@ export default async function globalSetup(): Promise<void> {
   // The printed token is one-time, so the suite signs in exactly once and shares
   // the resulting session cookie with every test.
   process.env.TRACEBOARD_E2E_TOKEN = await readSignInToken(configPath)
+  process.env.TRACEBOARD_E2E_INGEST_TOKEN = config.ingest_token
   await writeStorageState(baseURL, process.env.TRACEBOARD_E2E_TOKEN, authStatePath())
 }
 

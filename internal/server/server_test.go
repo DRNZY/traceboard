@@ -558,3 +558,141 @@ func TestSignInPageEscapesInjectedMarkup(t *testing.T) {
 func strPtr(value string) *string {
 	return &value
 }
+
+// stubSpool lets the settings test assert on the reported state without
+// standing up a real on-disk buffer.
+type stubSpool struct {
+	states []ingest.SpoolState
+	err    error
+}
+
+func (s *stubSpool) States(context.Context) ([]ingest.SpoolState, error) {
+	return s.states, s.err
+}
+
+func withSpool(t *testing.T, reporter SpoolReporter) *testServer {
+	t.Helper()
+	dbDir := t.TempDir()
+	if err := os.Chmod(dbDir, 0o700); err != nil {
+		t.Fatalf("secure temp directory: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "traceboard.db")
+	database, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	manager, err := auth.New(database, "ingest-secret")
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	signIn, err := manager.IssueSignInToken(context.Background())
+	if err != nil {
+		t.Fatalf("sign-in token: %v", err)
+	}
+	redactor, err := redact.New(redact.Options{})
+	if err != nil {
+		t.Fatalf("redactor: %v", err)
+	}
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatalf("secure temp directory: %v", err)
+	}
+	service := ingest.NewService(database, redactor, ingest.DefaultLimits())
+	cfg := config.Config{
+		ListenAddress:  "127.0.0.1:47821",
+		DatabasePath:   dbPath,
+		IngestToken:    "ingest-secret",
+		DashboardToken: "dashboard-secret",
+		SessionSecret:  "session-secret",
+		Sources:        map[string]config.SourceConfig{"opencode": {CaptureMode: event.CaptureDetailed}},
+	}
+	handler := New(Dependencies{
+		Config:     cfg,
+		Store:      database,
+		Auth:       manager,
+		Hub:        live.NewHub(),
+		Ingest:     ingest.NewCombinedService(service, ingest.NewOTLPService(service)),
+		Spool:      reporter,
+		ExportDir:  directory,
+		ConfigPath: filepath.Join(directory, "config.json"),
+		Version:    "test",
+		Started:    time.Now().UTC(),
+	})
+	return &testServer{handler: handler, store: database, auth: manager, hub: live.NewHub(), signIn: signIn, cfg: cfg}
+}
+
+func TestSettingsReportsSpoolState(t *testing.T) {
+	atRisk := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	reporter := &stubSpool{states: []ingest.SpoolState{
+		{Source: "opencode", Events: 12, Bytes: 4096, LimitBytes: 1048576, Dropped: 0, AtRisk: false},
+		{Source: "claude", Events: 3, Bytes: 900, LimitBytes: 1048576, Dropped: 7, AtRisk: true, AtRiskSince: &atRisk},
+	}}
+	server := withSpool(t, reporter)
+	server.cookie = server.signIn2(t)
+
+	recorder := server.do(t, server.authed(t, http.MethodGet, "/api/v1/settings"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("settings = %d", recorder.Code)
+	}
+	var payload struct {
+		Spool []ingest.SpoolState `json:"spool"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	if len(payload.Spool) != 2 {
+		t.Fatalf("spool entries = %d, want 2: %s", len(payload.Spool), recorder.Body.String())
+	}
+	if payload.Spool[0].Source != "opencode" || payload.Spool[0].Events != 12 || payload.Spool[0].Bytes != 4096 {
+		t.Fatalf("opencode spool entry = %+v", payload.Spool[0])
+	}
+	if payload.Spool[1].Source != "claude" || !payload.Spool[1].AtRisk || payload.Spool[1].Dropped != 7 {
+		t.Fatalf("claude spool entry = %+v", payload.Spool[1])
+	}
+	if payload.Spool[1].AtRiskSince == nil || !payload.Spool[1].AtRiskSince.Equal(atRisk) {
+		t.Fatalf("at_risk_since = %v, want %v", payload.Spool[1].AtRiskSince, atRisk)
+	}
+}
+
+func TestSettingsReportsEmptySpoolAsAList(t *testing.T) {
+	server := withSpool(t, &stubSpool{})
+	server.cookie = server.signIn2(t)
+
+	recorder := server.do(t, server.authed(t, http.MethodGet, "/api/v1/settings"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("settings = %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"spool":[]`) {
+		t.Fatalf("spool must serialize as an empty list, not null: %s", recorder.Body.String())
+	}
+}
+
+func TestSettingsSurvivesAFailingSpool(t *testing.T) {
+	server := withSpool(t, &stubSpool{err: context.DeadlineExceeded})
+	server.cookie = server.signIn2(t)
+
+	recorder := server.do(t, server.authed(t, http.MethodGet, "/api/v1/settings"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("a spool read failure must not fail the settings page, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"spool":[]`) {
+		t.Fatalf("spool must degrade to an empty list: %s", recorder.Body.String())
+	}
+}
+
+func TestSettingsToleratesAMissingSpool(t *testing.T) {
+	server := newTestServer(t)
+	server.cookie = server.signIn2(t)
+
+	recorder := server.do(t, server.authed(t, http.MethodGet, "/api/v1/settings"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("settings = %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"spool":[]`) {
+		t.Fatalf("spool must serialize as an empty list when no reporter is wired: %s", recorder.Body.String())
+	}
+}

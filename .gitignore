@@ -3,3 +3,7 @@ web/node_modules/
 web/.vite/
 web/dist/
 *.log
+web/test-results/
+web/playwright-report/
+web/e2e/.auth/
+dist/

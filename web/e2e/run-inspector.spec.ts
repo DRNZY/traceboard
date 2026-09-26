@@ -106,6 +106,58 @@ test.describe('run index and inspector', () => {
   })
 })
 
+/**
+ * The acceptance criterion is that a run appears in an already-open dashboard.
+ * This spec ingests through the real HTTP endpoint while the page is loaded and
+ * never reloads, so a passing run proves the live path rather than a refetch.
+ */
+test.describe('live updates', () => {
+  test('a run ingested while the dashboard is open appears without a reload', async ({ page, request }) => {
+    test.skip(!E2E_TOKEN, 'TRACEBOARD_E2E_TOKEN is not set')
+
+    await openDashboard(page)
+    await expect(page.getByText('RUN INDEX')).toBeVisible()
+    // Prove the page is not reloaded: a marker set now must survive the update.
+    await page.evaluate(() => {
+      ;(window as unknown as { __openSince: number }).__openSince = Date.now()
+    })
+
+    const runID = `e2e_live_${Date.now()}`
+    const event = (index: number, overrides: Record<string, unknown>) => ({
+      schema_version: 1,
+      event_id: `${runID}-${index}`,
+      source_event_id: `${runID}-src-${index}`,
+      source: 'opencode',
+      source_version: '1.0.0',
+      run_id: runID,
+      occurred_at: new Date(Date.UTC(2026, 8, 25, 11, 0, index)).toISOString(),
+      type: 'tool.started',
+      status: 'started',
+      capture: { mode: 'detailed' },
+      attributes: {},
+      ...overrides,
+    })
+    const response = await request.post('/api/v1/events', {
+      headers: { Authorization: `Bearer ${process.env.TRACEBOARD_E2E_INGEST_TOKEN ?? ''}` },
+      data: {
+        events: [
+          event(0, { type: 'run.started', status: 'started' }),
+          event(1, { type: 'run.completed', status: 'completed' }),
+        ],
+      },
+    })
+    expect(response.status()).toBe(202)
+
+    const row = page.getByRole('button', { name: new RegExp(runID) })
+    await expect(row).toBeVisible()
+    // The same document is still on screen; nothing navigated.
+    const stillOpen = await page.evaluate(
+      () => (window as unknown as { __openSince?: number }).__openSince,
+    )
+    expect(stillOpen).toBeGreaterThan(0)
+  })
+})
+
 test.describe('keyboard and zoom', () => {
   test('reaches every run row with the keyboard and shows a visible focus ring', async ({ page }) => {
     test.skip(!E2E_TOKEN, 'TRACEBOARD_E2E_TOKEN is not set')

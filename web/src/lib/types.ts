@@ -174,6 +174,17 @@ export interface ExportResult {
   bytes: number
 }
 
+export interface SpoolState {
+  source: string
+  events: number
+  bytes: number
+  limit_bytes: number
+  dropped: number
+  at_risk: boolean
+  at_risk_since?: string | null
+  oldest_at?: string | null
+}
+
 export interface Settings {
   version: string
   commit: string
@@ -185,6 +196,11 @@ export interface Settings {
   sessions_valid: number
   ingest_token_configured: boolean
   dashboard_token_configured: boolean
+  heartbeat_seconds?: number
+  export_dir?: string
+  started_at?: string
+  quarantine_count?: number
+  spool?: SpoolState[]
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'live' | 'recovering' | 'offline'

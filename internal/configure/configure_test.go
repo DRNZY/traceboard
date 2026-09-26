@@ -232,3 +232,111 @@ func TestGeminiCLIPointsAtTheLocalOTLPEndpoint(t *testing.T) {
 		t.Fatalf("settings reference an external endpoint: %s", contents)
 	}
 }
+
+// The installed plugin must be the real module, not a note telling the reader
+// to go run --print-plugin. A placeholder here produces a plugin that loads and
+// silently records nothing.
+func TestInstalledOpenCodePluginIsTheRealModule(t *testing.T) {
+	home, options := newTestHome(t)
+	if _, err := Apply("opencode", home, event.CaptureMetadata, options); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	path := filepath.Join(home, ".config", "opencode", "plugin", "traceboard.ts")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read installed plugin: %v", err)
+	}
+	installed := string(contents)
+
+	if installed != openCodePluginSource {
+		t.Fatal("the installed plugin is not the same source that --print-plugin emits")
+	}
+	if strings.Contains(installed, "placeholder") {
+		t.Fatal("the installed plugin is still a placeholder")
+	}
+	if strings.Contains(installed, "--print-plugin >") {
+		t.Fatal("the installed plugin only tells the reader to run --print-plugin")
+	}
+	for _, expected := range []string{
+		"export const TraceboardPlugin",
+		"SECRET_PATTERNS",
+		"TIMEOUT_MS = 750",
+		"TRACEBOARD_INGEST_TOKEN",
+	} {
+		if !strings.Contains(installed, expected) {
+			t.Fatalf("the installed plugin is missing %q", expected)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("plugin mode = %o, want 600", perm)
+	}
+}
+
+// The plugin key has to land in the OpenCode config OpenCode actually reads.
+// Beside the plugin module it is ignored, and the relative path would resolve
+// against the wrong directory.
+func TestOpenCodePluginIsRegisteredInOpenCodeConfig(t *testing.T) {
+	home, options := newTestHome(t)
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	original := `{"$schema":"https://opencode.ai/config.json","model":"ollama/qwable-fable","permission":"allow"}`
+	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := Apply("opencode", home, event.CaptureMetadata, options); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(contents, &merged); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+	registered, ok := merged["plugin"].([]any)
+	if !ok || len(registered) != 1 || registered[0] != "./plugin/traceboard.ts" {
+		t.Fatalf("plugin = %v, want [\"./plugin/traceboard.ts\"]", merged["plugin"])
+	}
+	// Existing keys survive the merge.
+	if merged["model"] != "ollama/qwable-fable" || merged["permission"] != "allow" {
+		t.Fatalf("merge lost an existing key: %v", merged)
+	}
+
+	// The stray config beside the plugin module must not be created.
+	stray := filepath.Join(home, ".config", "opencode", "plugin", "traceboard.json")
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatalf("%s should not exist, stat error = %v", stray, err)
+	}
+}
+
+// Session-scoped events that carry no sessionID must not be split into their own
+// run, and process-scoped events must never borrow a real session's id.
+func TestOpenCodePluginAttributesEventsToTheActiveSession(t *testing.T) {
+	var builder strings.Builder
+	if err := PrintPlugin(&builder); err != nil {
+		t.Fatalf("print plugin: %v", err)
+	}
+	source := builder.String()
+	for _, expected := range []string{
+		"let activeSession: string | null = null",
+		`event.type === "session.created"`,
+		"explicit === undefined ? activeSession : String(explicit)",
+		`(sessionID ?? "process")`,
+	} {
+		if !strings.Contains(source, expected) {
+			t.Fatalf("the plugin is missing %q", expected)
+		}
+	}
+	if strings.Contains(source, `?? "unknown"`) {
+		t.Fatal("the plugin still buckets unattributable events into a run called unknown")
+	}
+}

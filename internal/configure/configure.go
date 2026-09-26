@@ -113,8 +113,11 @@ func applyOpenCode(home string, options Options, set *ChangeSet) error {
 	if err := ensurePath(path, options, set, "create the OpenCode plugin that forwards events"); err != nil {
 		return err
 	}
-	modulePath := filepath.Join(pluginDirectory, "traceboard.json")
-	if err := mergeJSON(modulePath, options, set, map[string]any{
+	// The plugin key belongs in the OpenCode config itself. Writing it beside
+	// the plugin would both hide it from OpenCode and make the relative path
+	// resolve against the wrong directory.
+	configPath := filepath.Join(directory, "opencode.json")
+	if err := mergeJSON(configPath, options, set, map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		"plugin":  []string{"./plugin/traceboard.ts"},
 	}, "register the Traceboard plugin"); err != nil {
@@ -245,7 +248,7 @@ func ensurePath(path string, options Options, set *ChangeSet, detail string) err
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
-	contents := fmt.Sprintf("// Traceboard OpenCode plugin placeholder.\n// Run: traceboard configure opencode --print-plugin > %s\n", path)
+	contents := openCodePluginSource
 	return os.WriteFile(path, []byte(contents), 0o600)
 }
 
@@ -387,11 +390,22 @@ export const TraceboardPlugin: Plugin = async ({ client, $ }) => {
   const batcher = new Batcher(post)
   const now = () => new Date().toISOString()
 
+  // OpenCode emits session-scoped events that carry no sessionID of their own,
+  // and it also emits process-scoped events (plugin.added, catalog.updated)
+  // that belong to no session at all. Remembering the session this process
+  // opened keeps the former attached to their run; the latter are kept out of
+  // every session so they can never be mistaken for run activity.
+  let activeSession: string | null = null
+
   return {
     event: async ({ event }) => {
       const properties = (event as { properties?: Record<string, unknown> }).properties ?? {}
-      const sessionID = String(properties.sessionID ?? properties.session_id ?? "unknown")
-      const runID = "opencode:" + sessionID
+      const explicit = properties.sessionID ?? properties.session_id
+      if (event.type === "session.created") {
+        activeSession = explicit === undefined ? null : String(explicit)
+      }
+      const sessionID = explicit === undefined ? activeSession : String(explicit)
+      const runID = "opencode:" + (sessionID ?? "process")
       let type = "source.extension"
       let status = "unknown"
       let stepID: string | undefined

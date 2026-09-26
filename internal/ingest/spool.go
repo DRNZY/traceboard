@@ -435,3 +435,68 @@ func (sweeper *ExpirySweeper) Run(ctx context.Context) {
 func (sweeper *ExpirySweeper) Stop() {
 	sweeper.once.Do(func() { close(sweeper.stop) })
 }
+
+// States reports the buffer for every source that has spooled anything, so an
+// operator can see whether data is waiting while the collector was down. It
+// satisfies the dashboard's spool reporter.
+func (spool *Spool) States(_ context.Context) ([]SpoolState, error) {
+	names, err := spool.sources()
+	if err != nil {
+		return nil, err
+	}
+	spool.mu.Lock()
+	defer spool.mu.Unlock()
+
+	states := make([]SpoolState, 0, len(names))
+	for _, name := range names {
+		state, err := spool.stateLocked(name)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, SpoolState{
+			Source:      name,
+			Events:      state.Events,
+			Bytes:       state.Bytes,
+			LimitBytes:  state.LimitBytes,
+			Dropped:     state.Dropped,
+			AtRisk:      state.AtRisk,
+			AtRiskSince: state.AtRiskSince,
+			OldestAt:    state.OldestAt,
+		})
+	}
+	return states, nil
+}
+
+// stateLocked builds the public spool state for one source. The caller holds the
+// mutex, so a drain cannot change the numbers mid-read.
+func (spool *Spool) stateLocked(name string) (SpoolState, error) {
+	entries, err := spool.readEntries(name)
+	if err != nil {
+		return SpoolState{}, err
+	}
+	now := spool.now().UTC()
+	state := SpoolState{
+		Source:     name,
+		Events:     len(entries),
+		LimitBytes: spool.limitBytes,
+		Dropped:    spool.dropped[name],
+		Now:        now,
+	}
+	for _, entry := range entries {
+		state.Bytes += entryLineBytes(entry)
+		if state.OldestAt == nil || entry.Timestamp.Before(*state.OldestAt) {
+			oldest := entry.Timestamp
+			state.OldestAt = &oldest
+		}
+	}
+	if since, ok := spool.atRisk[name]; ok {
+		state.AtRisk = true
+		value := since
+		state.AtRiskSince = &value
+	} else if state.Bytes >= spool.limitBytes {
+		state.AtRisk = true
+		since := now.Add(-LossWarningGrace)
+		state.AtRiskSince = &since
+	}
+	return state, nil
+}
